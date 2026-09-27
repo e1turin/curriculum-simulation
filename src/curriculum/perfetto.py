@@ -1,27 +1,28 @@
 """Convert curriculum JSON into Perfetto's JSON trace-event format."""
 
-from __future__ import annotations
-
 import argparse
 import json
 import pathlib
 import sys
-from typing import Any
+from typing import Any, cast
 
+from curriculum.utils import require
 
 DEFAULT_SEMESTER_DURATION_US = 1_000_000
 
 
 def _positive_int(value: object, field: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ValueError(f"{field} must be a positive integer")
-    return value
+    require(
+        isinstance(value, int) and not isinstance(value, bool) and value > 0,
+        f"{field} must be a positive integer",
+    )
+    return cast(int, value)
 
 
 def _schema_major(data: dict[str, Any]) -> int:
     version = data.get("schema_version")
-    if not isinstance(version, str):
-        raise ValueError("schema_version must be a string")
+    require(isinstance(version, str), "schema_version must be a string")
+    version = cast(str, version)
 
     try:
         return int(version.split(".", maxsplit=1)[0])
@@ -41,10 +42,10 @@ def build_perfetto_trace(
     display scale: by default one semantic semester is represented by one
     trace second. The semantic semester values are retained in event args.
     """
-    if _schema_major(data) != 1:
-        raise ValueError(
-            f"unsupported curriculum schema_version: {data['schema_version']!r}"
-        )
+    require(
+        _schema_major(data) == 1,
+        f"unsupported curriculum schema_version: {data['schema_version']!r}",
+    )
 
     semester_duration_us = _positive_int(
         semester_duration_us,
@@ -52,14 +53,15 @@ def build_perfetto_trace(
     )
 
     records = data.get("records")
-    if not isinstance(records, list):
-        raise ValueError("records must be an array")
+    require(isinstance(records, list), "records must be an array")
+    records = cast(list[Any], records)
 
     temporal_model = data.get("temporal_model", {})
-    if not isinstance(temporal_model, dict):
-        raise ValueError("temporal_model must be an object")
-    if temporal_model.get("unit", "semester") != "semester":
-        raise ValueError("only semester-based temporal models are supported")
+    require(isinstance(temporal_model, dict), "temporal_model must be an object")
+    require(
+        temporal_model.get("unit", "semester") == "semester",
+        "only semester-based temporal models are supported",
+    )
 
     default_duration = _positive_int(
         temporal_model.get("default_item_duration", 1),
@@ -69,15 +71,19 @@ def build_perfetto_trace(
         "duration_is_inferred",
         True,
     )
-    if not isinstance(default_duration_is_inferred, bool):
-        raise ValueError("temporal_model.duration_is_inferred must be a boolean")
+    require(
+        isinstance(default_duration_is_inferred, bool),
+        "temporal_model.duration_is_inferred must be a boolean",
+    )
 
     scheduled: list[tuple[dict[str, Any], int, int, int]] = []
     seen_orders: set[int] = set()
 
     for index, record in enumerate(records, start=1):
-        if not isinstance(record, dict):
-            raise ValueError(f"records[{index - 1}] must be an object")
+        require(
+            isinstance(record, dict),
+            f"records[{index - 1}] must be an object",
+        )
 
         semester = record.get("semester_start")
         if semester is None:
@@ -91,8 +97,10 @@ def build_perfetto_trace(
             record.get("order", index),
             f"records[{index - 1}].order",
         )
-        if order in seen_orders:
-            raise ValueError(f"duplicate order among scheduled records: {order}")
+        require(
+            order not in seen_orders,
+            f"duplicate order among scheduled records: {order}",
+        )
         seen_orders.add(order)
 
         duration = _positive_int(
@@ -101,8 +109,7 @@ def build_perfetto_trace(
         )
         scheduled.append((record, semester, duration, order))
 
-    if not scheduled:
-        raise ValueError("the curriculum has no records with semester_start")
+    require(scheduled, "the curriculum has no records with semester_start")
 
     first_semester = min(semester for _, semester, _, _ in scheduled)
     model_first_semester = temporal_model.get("first_semester")
@@ -111,15 +118,14 @@ def build_perfetto_trace(
             model_first_semester,
             "temporal_model.first_semester",
         )
-        if model_first_semester > first_semester:
-            raise ValueError(
-                "temporal_model.first_semester is later than a scheduled record"
-            )
+        require(
+            model_first_semester <= first_semester,
+            "temporal_model.first_semester is later than a scheduled record",
+        )
         first_semester = model_first_semester
 
     document = data.get("document", {})
-    if not isinstance(document, dict):
-        raise ValueError("document must be an object")
+    require(isinstance(document, dict), "document must be an object")
 
     trace_events: list[dict[str, Any]] = []
     semesters = sorted({semester for _, semester, _, _ in scheduled})
@@ -148,14 +154,20 @@ def build_perfetto_trace(
     seen_record_ids: set[str] = set()
     for record, semester, duration_semesters, order in scheduled:
         name = record.get("name")
-        if not isinstance(name, str) or not name:
-            raise ValueError(f"scheduled record {order} must have a non-empty name")
+        require(
+            isinstance(name, str) and bool(name),
+            f"scheduled record {order} must have a non-empty name",
+        )
 
         record_id = record.get("id", f"record-{order:04d}")
-        if not isinstance(record_id, str) or not record_id:
-            raise ValueError(f"scheduled record {order} must have a non-empty id")
-        if record_id in seen_record_ids:
-            raise ValueError(f"duplicate id among scheduled records: {record_id!r}")
+        require(
+            isinstance(record_id, str) and bool(record_id),
+            f"scheduled record {order} must have a non-empty id",
+        )
+        require(
+            record_id not in seen_record_ids,
+            f"duplicate id among scheduled records: {record_id!r}",
+        )
         seen_record_ids.add(record_id)
 
         trace_events.extend(
@@ -236,8 +248,7 @@ def convert_file(
     except json.JSONDecodeError as exc:
         raise ValueError(f"invalid JSON in {input_path}: {exc}") from exc
 
-    if not isinstance(data, dict):
-        raise ValueError("curriculum JSON root must be an object")
+    require(isinstance(data, dict), "curriculum JSON root must be an object")
 
     trace = build_perfetto_trace(
         data,

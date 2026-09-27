@@ -40,10 +40,10 @@ from typing import Optional
 # The semester is optional.
 ROW_RE = re.compile(
     r"^\s*"
-    r"(?:(\d+)\s+)?"       # optional semester
-    r"(.+?)"                # name
-    r"\s+(\d+)"             # credits
-    r"\s+(\d+)"             # hours
+    r"(?:(\d+)\s+)?"  # optional semester
+    r"(.+?)"  # name
+    r"\s+(\d+)"  # credits
+    r"\s+(\d+)"  # hours
     r"\s*$"
 )
 
@@ -74,14 +74,7 @@ def extract_pdf_text(pdf_path: pathlib.Path) -> str:
         )
 
     process = subprocess.run(
-        [
-            "pdftotext",
-            "-layout",
-            "-enc",
-            "UTF-8",
-            str(pdf_path),
-            "-"
-        ],
+        ["pdftotext", "-layout", "-enc", "UTF-8", str(pdf_path), "-"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -89,9 +82,7 @@ def extract_pdf_text(pdf_path: pathlib.Path) -> str:
     )
 
     if process.returncode != 0:
-        raise RuntimeError(
-            f"pdftotext failed:\n{process.stderr}"
-        )
+        raise RuntimeError(f"pdftotext failed:\n{process.stderr}")
 
     return process.stdout
 
@@ -129,11 +120,7 @@ def infer_document_metadata(pages: list[str]) -> dict:
     if not pages:
         return {}
 
-    lines = [
-        normalize_name(line)
-        for line in pages[0].splitlines()
-        if line.strip()
-    ]
+    lines = [normalize_name(line) for line in pages[0].splitlines() if line.strip()]
 
     for line in lines:
         if line.lower() == "учебный план":
@@ -189,11 +176,7 @@ def parse_curriculum(text: str, source_name: str) -> dict:
             if not name:
                 continue
 
-            semester = (
-                int(semester_text)
-                if semester_text is not None
-                else None
-            )
+            semester = int(semester_text) if semester_text is not None else None
 
             credits = int(credits_text)
             hours = int(hours_text)
@@ -213,11 +196,7 @@ def parse_curriculum(text: str, source_name: str) -> dict:
 
             records.append(record)
 
-    block_totals = [
-        record
-        for record in records
-        if record["record_type"] == "block"
-    ]
+    block_totals = [record for record in records if record["record_type"] == "block"]
 
     scheduled_semesters = [
         record["semester_start"]
@@ -235,10 +214,7 @@ def parse_curriculum(text: str, source_name: str) -> dict:
         },
         "columns": {
             "semester_start": "Семестры старта",
-            "name": (
-                "Наименование модулей, дисциплин, "
-                "практики и аттестации"
-            ),
+            "name": ("Наименование модулей, дисциплин, практики и аттестации"),
             "credits": "Трудоемкость в з.ед",
             "hours": "Трудоемкость в час.",
         },
@@ -263,23 +239,16 @@ def parse_curriculum(text: str, source_name: str) -> dict:
             "records": len(records),
             "blocks": len(block_totals),
             "courses_or_semester_items": sum(
-                1
-                for x in records
-                if x["record_type"] == "curriculum_item"
+                1 for x in records if x["record_type"] == "curriculum_item"
             ),
             "groups_or_requirements": sum(
-                1
-                for x in records
-                if x["record_type"] == "group_or_requirement"
+                1 for x in records if x["record_type"] == "group_or_requirement"
             ),
         },
         "notes": [
             "Records preserve the printed row order of the PDF.",
             "id is deterministic for a record's position in that order.",
-            (
-                "semester_start is null when the source row does not "
-                "contain a semester."
-            ),
+            ("semester_start is null when the source row does not contain a semester."),
             (
                 "Choice groups can contain alternatives, so the credits "
                 "of child rows must not automatically be summed."
@@ -314,14 +283,16 @@ def validate(data: dict, hours_per_credit: int = 36) -> list[dict]:
         expected_hours = credits * hours_per_credit
 
         if hours != expected_hours:
-            warnings.append({
-                "order": record["order"],
-                "name": record["name"],
-                "credits": credits,
-                "hours": hours,
-                "expected_hours": expected_hours,
-                "source_page": record["source_page"],
-            })
+            warnings.append(
+                {
+                    "order": record["order"],
+                    "name": record["name"],
+                    "credits": credits,
+                    "hours": hours,
+                    "expected_hours": expected_hours,
+                    "source_page": record["source_page"],
+                }
+            )
 
     return warnings
 
@@ -350,7 +321,8 @@ def convert(
             data,
             ensure_ascii=False,
             indent=2,
-        ) + "\n",
+        )
+        + "\n",
         encoding="utf-8",
     )
 
@@ -358,22 +330,15 @@ def convert(
     print(f"Output:  {output_path}")
     print(f"Records: {len(data['records'])}")
     print(
-        "Totals:  "
-        f"{data['totals']['credits']} credits, "
-        f"{data['totals']['hours']} hours"
+        f"Totals:  {data['totals']['credits']} credits, {data['totals']['hours']} hours"
     )
 
     if warnings:
-        print(
-            f"Warning: {len(warnings)} rows do not satisfy "
-            "credits × 36 = hours."
-        )
+        print(f"Warning: {len(warnings)} rows do not satisfy credits × 36 = hours.")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Convert curriculum PDF to JSON."
-    )
+    parser = argparse.ArgumentParser(description="Convert curriculum PDF to JSON.")
 
     parser.add_argument(
         "pdf",
@@ -407,9 +372,7 @@ def main() -> None:
         sys.exit(1)
 
     output_path = (
-        args.output.resolve()
-        if args.output
-        else pdf_path.with_suffix(".json")
+        args.output.resolve() if args.output else pdf_path.with_suffix(".json")
     )
 
     try:
