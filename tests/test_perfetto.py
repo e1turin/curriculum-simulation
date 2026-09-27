@@ -1,3 +1,4 @@
+import datetime
 from typing import cast
 
 import pytest
@@ -110,8 +111,13 @@ def curriculum_data() -> dict[str, object]:
 def _build_trace(
     data: dict[str, object],
     duration_ns: int = 100,
+    academic_start_year: int | None = None,
 ) -> tuple[PerfettoTraceBuild, Trace]:
-    result = build_perfetto_trace(data, semester_duration_ns=duration_ns)
+    result = build_perfetto_trace(
+        data,
+        semester_duration_ns=duration_ns,
+        academic_start_year=academic_start_year,
+    )
     return result, _parse_trace(result.data)
 
 
@@ -251,6 +257,63 @@ def test_adds_sequential_semester_schedule_track(
     assert [packet.timestamp for packet in ends] == [100, 200, 300, 400]
 
 
+def test_maps_semesters_to_academic_calendar(
+    curriculum_data: dict[str, object],
+) -> None:
+    _, trace = _build_trace(curriculum_data, academic_start_year=2024)
+    day_ns = 86_400_000_000_000
+    begins = _course_packets(trace, TrackEvent.TYPE_SLICE_BEGIN)
+    course_track_uuids = {packet.track_event.track_uuid for packet in begins}
+    ends = [
+        packet
+        for packet in trace.packet
+        if packet.HasField("track_event")
+        and packet.track_event.type == TrackEvent.TYPE_SLICE_END
+        and packet.track_event.track_uuid in course_track_uuids
+    ]
+    snapshot = next(
+        packet.clock_snapshot
+        for packet in trace.packet
+        if packet.HasField("clock_snapshot")
+    )
+    clocks = {clock.clock_id: clock.timestamp for clock in snapshot.clocks}
+
+    assert [packet.timestamp for packet in begins] == [0, 365 * day_ns]
+    assert [packet.timestamp for packet in ends] == [153 * day_ns, 668 * day_ns]
+    assert all(packet.timestamp_clock_id == 11 for packet in begins + ends)
+    assert snapshot.primary_trace_clock == 11
+    assert clocks[11] == 0
+    assert clocks[1] == int(
+        datetime.datetime(2024, 9, 1, tzinfo=datetime.UTC).timestamp() * 1_000_000_000
+    )
+
+    metadata = next(
+        packet.track_event
+        for packet in trace.packet
+        if packet.HasField("track_event")
+        and packet.track_event.type == TrackEvent.TYPE_INSTANT
+    )
+    assert _annotations(metadata)["timeline_model"] == "academic_calendar"
+    assert _annotations(metadata)["academic_start_date"] == "2024-09-01"
+    assert _annotations(metadata)["academic_end_date"] == "2026-06-30"
+
+    schedule_uuid = next(
+        packet.track_descriptor.uuid
+        for packet in trace.packet
+        if packet.HasField("track_descriptor")
+        and packet.track_descriptor.name == "Semesters"
+    )
+    first_semester = next(
+        packet.track_event
+        for packet in trace.packet
+        if packet.HasField("track_event")
+        and packet.track_event.type == TrackEvent.TYPE_SLICE_BEGIN
+        and packet.track_event.track_uuid == schedule_uuid
+    )
+    assert _annotations(first_semester)["calendar_start_date"] == "2024-09-01"
+    assert _annotations(first_semester)["calendar_end_date"] == "2025-01-31"
+
+
 def test_honors_explicit_default_duration_provenance(
     curriculum_data: dict[str, object],
 ) -> None:
@@ -287,6 +350,13 @@ def test_accepts_legacy_v1_input_and_infers_nearest_group() -> None:
     assert args["group_id"] == "record-0006"
     assert args["group_name"] == "Legacy group"
     assert args["duration_semesters"] == 1
+
+
+def test_rejects_academic_start_year_before_unix_epoch(
+    curriculum_data: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError, match="1970 or later"):
+        build_perfetto_trace(curriculum_data, academic_start_year=1969)
 
 
 def test_rejects_non_positive_semester(

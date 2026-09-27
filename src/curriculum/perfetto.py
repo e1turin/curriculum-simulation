@@ -1,6 +1,7 @@
 """Convert curriculum JSON into a native Perfetto protobuf trace."""
 
 import argparse
+import datetime
 import json
 import pathlib
 import sys
@@ -8,6 +9,8 @@ import uuid
 from dataclasses import dataclass
 
 from perfetto.protos.perfetto.trace.perfetto_trace_pb2 import (
+    BUILTIN_CLOCK_REALTIME,
+    BUILTIN_CLOCK_TRACE_FILE,
     DebugAnnotation,
     TrackDescriptor,
     TrackEvent,
@@ -20,6 +23,7 @@ type JsonObject = dict[str, object]
 type RecordReference = tuple[JsonObject, int, str]
 
 DEFAULT_SEMESTER_DURATION_NS = 1_000_000_000
+NANOSECONDS_PER_SECOND = 1_000_000_000
 TRUSTED_PACKET_SEQUENCE_ID = 1
 _TRACK_UUID_NAMESPACE = uuid.UUID("28ad0a98-216d-5d42-91c9-5cbbb5609db7")
 
@@ -115,19 +119,28 @@ def build_perfetto_trace(
     data: JsonObject,
     *,
     semester_duration_ns: int = DEFAULT_SEMESTER_DURATION_NS,
+    academic_start_year: int | None = None,
 ) -> PerfettoTraceBuild:
     """Build a native Perfetto TrackEvent trace from curriculum data.
 
-    Native Perfetto packet timestamps are nanoseconds. Because the source
-    describes semantic semesters rather than wall-clock dates,
-    ``semester_duration_ns`` is only a display scale. Semantic semester values
-    and the duration provenance are retained as typed debug annotations.
+    By default, semantic semesters use a compact uniform display scale. When
+    ``academic_start_year`` is supplied, semesters use calendar boundaries and
+    the trace clock is correlated with UTC wall time.
     """
     schema_version = _schema_version(data)
     semester_duration_ns = _positive_int(
         semester_duration_ns,
         "semester_duration_ns",
     )
+    if academic_start_year is not None:
+        academic_start_year = _positive_int(
+            academic_start_year,
+            "academic_start_year",
+        )
+        require(
+            academic_start_year >= 1970,
+            "academic_start_year must be 1970 or later",
+        )
 
     records = require_type(data.get("records"), list, "records must be an array")
     temporal_model = _object(data.get("temporal_model", {}), "temporal_model")
@@ -267,7 +280,56 @@ def build_perfetto_trace(
     document = _object(data.get("document", {}), "document")
     unscheduled_count = len(records) - len(scheduled)
 
+    academic_epoch: datetime.date | None = None
+    if academic_start_year is not None:
+        academic_epoch = datetime.date(academic_start_year, 9, 1)
+
+    def semester_dates(semester: int) -> tuple[datetime.date, datetime.date]:
+        assert academic_start_year is not None
+        academic_year = academic_start_year + (semester - 1) // 2
+        if semester % 2 == 1:
+            return (
+                datetime.date(academic_year, 9, 1),
+                datetime.date(academic_year + 1, 2, 1),
+            )
+        return (
+            datetime.date(academic_year + 1, 2, 1),
+            datetime.date(academic_year + 1, 7, 1),
+        )
+
+    def date_timestamp_ns(value: datetime.date) -> int:
+        assert academic_epoch is not None
+        return (value - academic_epoch).days * 86_400 * NANOSECONDS_PER_SECOND
+
+    def semester_range_ns(semester: int, duration: int = 1) -> tuple[int, int]:
+        if academic_epoch is None:
+            start_ns = (semester - first_semester) * semester_duration_ns
+            return start_ns, start_ns + duration * semester_duration_ns
+        start_date, _ = semester_dates(semester)
+        _, end_date = semester_dates(semester + duration - 1)
+        return date_timestamp_ns(start_date), date_timestamp_ns(end_date)
+
     builder = TraceProtoBuilder()
+    if academic_epoch is not None:
+        clock_packet = builder.add_packet()
+        clock_snapshot = clock_packet.clock_snapshot
+        clock_snapshot.primary_trace_clock = BUILTIN_CLOCK_TRACE_FILE
+        trace_clock = clock_snapshot.clocks.add()
+        trace_clock.clock_id = BUILTIN_CLOCK_TRACE_FILE
+        trace_clock.timestamp = 0
+        realtime_clock = clock_snapshot.clocks.add()
+        realtime_clock.clock_id = BUILTIN_CLOCK_REALTIME
+        realtime_clock.timestamp = (
+            int(
+                datetime.datetime(
+                    academic_epoch.year,
+                    academic_epoch.month,
+                    academic_epoch.day,
+                    tzinfo=datetime.UTC,
+                ).timestamp()
+            )
+            * NANOSECONDS_PER_SECOND
+        )
     used_track_uuids: set[int] = set()
 
     def add_track_descriptor(
@@ -290,9 +352,7 @@ def build_perfetto_trace(
         descriptor.uuid = track_uuid
         descriptor.name = name
         descriptor.description = description
-        descriptor.sibling_merge_behavior = (
-            TrackDescriptor.SIBLING_MERGE_BEHAVIOR_NONE
-        )
+        descriptor.sibling_merge_behavior = TrackDescriptor.SIBLING_MERGE_BEHAVIOR_NONE
         if parent_uuid is not None:
             descriptor.parent_uuid = parent_uuid
         if order is not None:
@@ -312,6 +372,8 @@ def build_perfetto_trace(
     ) -> None:
         begin_packet = builder.add_packet()
         begin_packet.timestamp = start_ns
+        if academic_epoch is not None:
+            begin_packet.timestamp_clock_id = BUILTIN_CLOCK_TRACE_FILE
         begin_packet.trusted_packet_sequence_id = TRUSTED_PACKET_SEQUENCE_ID
         begin_event = begin_packet.track_event
         begin_event.type = TrackEvent.TYPE_SLICE_BEGIN
@@ -324,6 +386,8 @@ def build_perfetto_trace(
 
         end_packet = builder.add_packet()
         end_packet.timestamp = end_ns
+        if academic_epoch is not None:
+            end_packet.timestamp_clock_id = BUILTIN_CLOCK_TRACE_FILE
         end_packet.trusted_packet_sequence_id = TRUSTED_PACKET_SEQUENCE_ID
         end_event = end_packet.track_event
         end_event.type = TrackEvent.TYPE_SLICE_END
@@ -338,6 +402,8 @@ def build_perfetto_trace(
     )
     metadata_packet = builder.add_packet()
     metadata_packet.timestamp = 0
+    if academic_epoch is not None:
+        metadata_packet.timestamp_clock_id = BUILTIN_CLOCK_TRACE_FILE
     metadata_packet.trusted_packet_sequence_id = TRUSTED_PACKET_SEQUENCE_ID
     metadata_event = metadata_packet.track_event
     metadata_event.type = TrackEvent.TYPE_INSTANT
@@ -353,9 +419,26 @@ def build_perfetto_trace(
             "source_file": document.get("source_file"),
             "language": document.get("language"),
             "semantic_time_unit": "semester",
+            "timeline_model": (
+                "academic_calendar"
+                if academic_epoch is not None
+                else "uniform_semesters"
+            ),
             "first_semester": first_semester,
             "last_semester": last_semester,
-            "semester_duration_ns": semester_duration_ns,
+            "semester_duration_ns": (
+                semester_duration_ns if academic_epoch is None else None
+            ),
+            "academic_start_date": (
+                academic_epoch.isoformat() if academic_epoch is not None else None
+            ),
+            "academic_end_date": (
+                (
+                    semester_dates(last_semester)[1] - datetime.timedelta(days=1)
+                ).isoformat()
+                if academic_epoch is not None
+                else None
+            ),
             "scheduled_record_count": len(scheduled),
             "unscheduled_record_count": unscheduled_count,
             "document_group_count": len(
@@ -372,17 +455,24 @@ def build_perfetto_trace(
         order=1,
     )
     for semester in range(first_semester, last_semester + 1):
-        start_ns = (semester - first_semester) * semester_duration_ns
+        start_ns, end_ns = semester_range_ns(semester)
+        calendar_start = calendar_end = None
+        if academic_epoch is not None:
+            start_date, end_date_exclusive = semester_dates(semester)
+            calendar_start = start_date.isoformat()
+            calendar_end = (end_date_exclusive - datetime.timedelta(days=1)).isoformat()
         add_slice(
             track_uuid=semester_schedule_uuid,
             start_ns=start_ns,
-            end_ns=start_ns + semester_duration_ns,
+            end_ns=end_ns,
             name=f"Semester {semester}",
             categories=["curriculum.semester"],
             annotations={
                 "semester": semester,
                 "semester_start": semester,
                 "semester_end_exclusive": semester + 1,
+                "calendar_start_date": calendar_start,
+                "calendar_end_date": calendar_end,
             },
         )
 
@@ -415,9 +505,7 @@ def build_perfetto_trace(
             track_uuid,
             name=group_name,
             description=f"Document group {group_id}.",
-            parent_uuid=(
-                block_track_uuids[block_id] if block_id is not None else None
-            ),
+            parent_uuid=(block_track_uuids[block_id] if block_id is not None else None),
             order=group_order,
             explicit_child_ordering=True,
         )
@@ -444,8 +532,10 @@ def build_perfetto_trace(
             order=item.order,
         )
 
-        start_ns = (item.semester - first_semester) * semester_duration_ns
-        end_ns = start_ns + item.duration_semesters * semester_duration_ns
+        start_ns, end_ns = semester_range_ns(
+            item.semester,
+            item.duration_semesters,
+        )
         add_slice(
             track_uuid=track_uuid,
             start_ns=start_ns,
@@ -462,9 +552,7 @@ def build_perfetto_trace(
                 "group_id": item.group_id,
                 "group_name": item.group_name,
                 "semester_start": item.semester,
-                "semester_end_exclusive": (
-                    item.semester + item.duration_semesters
-                ),
+                "semester_end_exclusive": (item.semester + item.duration_semesters),
                 "duration_semesters": item.duration_semesters,
                 "duration_is_inferred": (
                     "duration_semesters" not in item.record
@@ -493,6 +581,7 @@ def convert_file(
     output_path: pathlib.Path,
     *,
     semester_duration_ns: int = DEFAULT_SEMESTER_DURATION_NS,
+    academic_start_year: int | None = None,
 ) -> PerfettoTraceBuild:
     """Read curriculum JSON and write a native Perfetto ``.pftrace`` file."""
     try:
@@ -504,6 +593,7 @@ def convert_file(
     result = build_perfetto_trace(
         data,
         semester_duration_ns=semester_duration_ns,
+        academic_start_year=academic_start_year,
     )
     output_path.write_bytes(result.data)
     return result
@@ -529,6 +619,14 @@ def main() -> None:
             f"(default: {DEFAULT_SEMESTER_DURATION_NS})"
         ),
     )
+    parser.add_argument(
+        "--academic-start-year",
+        type=int,
+        help=(
+            "Map semesters to an academic calendar beginning September 1 of "
+            "this year; spring semesters end June 30"
+        ),
+    )
     args = parser.parse_args()
 
     input_path = args.input.resolve()
@@ -548,6 +646,7 @@ def main() -> None:
             input_path,
             output_path,
             semester_duration_ns=args.semester_duration_ns,
+            academic_start_year=args.academic_start_year,
         )
     except (OSError, TypeError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)

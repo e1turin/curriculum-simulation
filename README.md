@@ -57,13 +57,23 @@ WHERE category GLOB 'curriculum,*'
 ORDER BY ts, name;
 ```
 
-Native Perfetto timestamps use nanoseconds, while the input only has semantic semesters. The default display mapping is therefore **one semester = 1,000,000,000 nanoseconds (one trace second)**. This is only a visualization scale: use `semester_start`, `semester_end_exclusive`, and `duration_semesters` annotations for analysis. The scale can be changed without changing semantics:
+Native Perfetto timestamps use nanoseconds, while the input only has semantic semesters. The default compact display mapping is therefore **one semester = 1,000,000,000 nanoseconds (one trace second)**. This is only a visualization scale: use `semester_start`, `semester_end_exclusive`, and `duration_semesters` annotations for analysis. The scale can be changed without changing semantics:
 
 ```sh
 uv run curriculum-perfetto curriculum.json \
   --semester-duration-ns 10000000000 \
   -o curriculum.pftrace
 ```
+
+To use an academic calendar instead, provide its starting year. Autumn semesters run from September 1 through January 31, spring semesters from February 1 through June 30, and summer breaks remain visible as gaps. A single Perfetto clock snapshot correlates the relative timeline with UTC wall time:
+
+```sh
+uv run curriculum-perfetto curriculum.json \
+  --academic-start-year 2024 \
+  -o curriculum.perfetto
+```
+
+Calendar dates are included only on the export metadata event and semester-window slices; course slices retain the semantic semester annotations without duplicating calendar metadata.
 
 The exporter accepts all schema v1.x inputs. For v1.0/v1.1 it derives missing record IDs, temporal defaults, and nearest-preceding document groups where needed.
 
