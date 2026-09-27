@@ -1,28 +1,11 @@
-from typing import Any
+def require(condition: object, message: str) -> None:
+    """Raise ``ValueError`` when an input constraint is not satisfied."""
+    if not condition:
+        raise ValueError(message)
 
 
-class IllegalStateError(Exception):
-    """Extension which means violated internal contraints or assumptions"""
-
-
-type Condition = bool | object | None
-
-
-def require(cond: Condition, msg: str):
-    """Declares input constraints"""
-    if not cond:
-        raise ValueError(msg)
-
-
-def check(cond: Condition, msg: str):
-    """Declares internal constraints"""
-    if not cond:
-        raise IllegalStateError(msg)
-
-
-def typecheck(obj: Any, ty: type):
-    """Declares type constraints, but better use proper types with match-case statement and not typechecking"""
-    if not isinstance(obj, ty):
-        raise IllegalStateError(
-            f"Object {obj} is supposed to have type {ty} but it is {type(obj)}"
-        )
+def require_type[T](value: object, expected: type[T], message: str) -> T:
+    """Validate and narrow a runtime value to ``T``."""
+    if not isinstance(value, expected):
+        raise TypeError(message)
+    return value

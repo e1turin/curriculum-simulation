@@ -1,160 +1,318 @@
-from __future__ import annotations
+from typing import cast
 
-import unittest
+import pytest
+from perfetto.protos.perfetto.trace.perfetto_trace_pb2 import (
+    DebugAnnotation,
+    Trace,
+    TracePacket,
+    TrackEvent,
+)
 
-from curriculum.perfetto import build_perfetto_trace
+from curriculum.perfetto import PerfettoTraceBuild, build_perfetto_trace
 
 
-class PerfettoTraceTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.data = {
-            "schema_version": "1.1",
-            "document": {
-                "title": "Study plan",
-                "program": "Software Engineering",
-                "source_file": "plan.pdf",
-                "language": "en",
+def _parse_trace(data: bytes) -> Trace:
+    trace = Trace()
+    trace.ParseFromString(data)
+    return trace
+
+
+def _annotation_value(annotation: DebugAnnotation) -> object:
+    value_field = annotation.WhichOneof("value")
+    return getattr(annotation, value_field) if value_field else None
+
+
+def _annotations(event: TrackEvent) -> dict[str, object]:
+    return {
+        annotation.name: _annotation_value(annotation)
+        for annotation in event.debug_annotations
+    }
+
+
+def _course_packets(trace: Trace, event_type: int) -> list[TracePacket]:
+    return [
+        packet
+        for packet in trace.packet
+        if packet.HasField("track_event")
+        and packet.track_event.type == event_type
+        and "curriculum" in packet.track_event.categories
+    ]
+
+
+@pytest.fixture
+def curriculum_data() -> dict[str, object]:
+    return {
+        "schema_version": "1.2",
+        "document": {
+            "title": "Study plan",
+            "program": "Software Engineering",
+            "source_file": "plan.pdf",
+            "language": "en",
+        },
+        "temporal_model": {
+            "unit": "semester",
+            "first_semester": 1,
+            "last_semester": 3,
+            "default_item_duration": 1,
+            "duration_is_inferred": True,
+        },
+        "records": [
+            {
+                "id": "record-0001",
+                "order": 1,
+                "source_page": 1,
+                "semester_start": None,
+                "name": "Block 1",
+                "credits": 10,
+                "hours": 360,
+                "record_type": "block",
             },
-            "temporal_model": {
-                "unit": "semester",
-                "first_semester": 1,
-                "last_semester": 3,
-                "default_item_duration": 1,
-                "duration_is_inferred": True,
+            {
+                "id": "record-0002",
+                "order": 2,
+                "source_page": 1,
+                "semester_start": None,
+                "name": "Core subjects",
+                "credits": 10,
+                "hours": 360,
+                "record_type": "group_or_requirement",
+                "block_id": "record-0001",
             },
-            "records": [
-                {
-                    "id": "record-0001",
-                    "order": 1,
-                    "source_page": 1,
-                    "semester_start": None,
-                    "name": "Block 1",
-                    "credits": 10,
-                    "hours": 360,
-                    "record_type": "block",
-                },
-                {
-                    "id": "record-0002",
-                    "order": 2,
-                    "source_page": 1,
-                    "semester_start": 1,
-                    "name": "Algorithms",
-                    "credits": 3,
-                    "hours": 108,
-                    "record_type": "curriculum_item",
-                },
-                {
-                    "id": "record-0003",
-                    "order": 3,
-                    "source_page": 2,
-                    "semester_start": 3,
-                    "duration_semesters": 2,
-                    "name": "Capstone",
-                    "credits": 6,
-                    "hours": 216,
-                    "record_type": "curriculum_item",
-                },
-            ],
-        }
-
-    def test_creates_complete_slices_with_analysis_metadata(self) -> None:
-        trace = build_perfetto_trace(self.data, semester_duration_us=100)
-        slices = [event for event in trace["traceEvents"] if event["ph"] == "X"]
-
-        self.assertEqual(len(slices), 2)
-        self.assertEqual(slices[0]["ts"], 0)
-        self.assertEqual(slices[0]["dur"], 100)
-        self.assertEqual(slices[1]["ts"], 200)
-        self.assertEqual(slices[1]["dur"], 200)
-        self.assertNotEqual(slices[0]["tid"], slices[1]["tid"])
-
-        args = slices[0]["args"]
-        self.assertEqual(args["record_id"], "record-0002")
-        self.assertEqual(args["semester_end_exclusive"], 2)
-        self.assertTrue(args["duration_is_inferred"])
-        self.assertEqual(args["credits"], 3)
-        self.assertEqual(args["source_page"], 1)
-        self.assertEqual(args["source_file"], "plan.pdf")
-        self.assertEqual(args["program"], "Software Engineering")
-        self.assertEqual(args["curriculum_schema_version"], "1.1")
-
-        self.assertFalse(slices[1]["args"]["duration_is_inferred"])
-        self.assertEqual(slices[1]["args"]["semester_end_exclusive"], 5)
-        self.assertEqual(
-            trace["otherData"]["curriculum"]["unscheduled_record_count"],
-            1,
-        )
-
-    def test_groups_tracks_by_semester(self) -> None:
-        self.data["records"].append(
+            {
+                "id": "record-0003",
+                "order": 3,
+                "source_page": 1,
+                "semester_start": 1,
+                "name": "Algorithms",
+                "credits": 3,
+                "hours": 108,
+                "record_type": "curriculum_item",
+                "block_id": "record-0001",
+                "group_id": "record-0002",
+            },
             {
                 "id": "record-0004",
                 "order": 4,
-                "semester_start": 1,
-                "name": "Databases",
-            }
-        )
-        trace = build_perfetto_trace(self.data)
-        process_names = [
-            event["args"]["name"]
-            for event in trace["traceEvents"]
-            if event["ph"] == "M" and event["name"] == "process_name"
-        ]
-        semester_one_slices = [
-            event
-            for event in trace["traceEvents"]
-            if event["ph"] == "X" and event["pid"] == 1
-        ]
+                "source_page": 2,
+                "semester_start": 3,
+                "duration_semesters": 2,
+                "name": "Capstone",
+                "credits": 6,
+                "hours": 216,
+                "record_type": "curriculum_item",
+                "block_id": "record-0001",
+                "group_id": "record-0002",
+            },
+        ],
+    }
 
-        self.assertEqual(process_names, ["Semester 1", "Semester 3"])
-        self.assertEqual(len(semester_one_slices), 2)
-        self.assertEqual(len({event["tid"] for event in semester_one_slices}), 2)
 
-    def test_honors_explicit_default_duration_provenance(self) -> None:
-        self.data["temporal_model"]["duration_is_inferred"] = False
+def _build_trace(
+    data: dict[str, object],
+    duration_ns: int = 100,
+) -> tuple[PerfettoTraceBuild, Trace]:
+    result = build_perfetto_trace(data, semester_duration_ns=duration_ns)
+    return result, _parse_trace(result.data)
 
-        trace = build_perfetto_trace(self.data)
-        event = next(e for e in trace["traceEvents"] if e["ph"] == "X")
 
-        self.assertFalse(event["args"]["duration_is_inferred"])
+def test_creates_native_slices_with_analysis_metadata(
+    curriculum_data: dict[str, object],
+) -> None:
+    result, trace = _build_trace(curriculum_data)
+    begins = _course_packets(trace, TrackEvent.TYPE_SLICE_BEGIN)
+    course_track_uuids = {packet.track_event.track_uuid for packet in begins}
+    ends = [
+        packet
+        for packet in trace.packet
+        if packet.HasField("track_event")
+        and packet.track_event.type == TrackEvent.TYPE_SLICE_END
+        and packet.track_event.track_uuid in course_track_uuids
+    ]
 
-    def test_accepts_legacy_v1_input(self) -> None:
-        legacy = {
-            "schema_version": "1.0",
-            "document": {},
-            "records": [
-                {
-                    "order": 7,
-                    "semester_start": 2,
-                    "name": "Legacy course",
-                }
-            ],
+    assert (result.scheduled_record_count, result.unscheduled_record_count) == (2, 2)
+    assert len(begins) == len(ends) == 2
+    assert [packet.timestamp for packet in begins] == [0, 200]
+    assert [packet.timestamp for packet in ends] == [100, 400]
+
+    event = begins[0].track_event
+    args = _annotations(event)
+    assert event.name == "Algorithms"
+    assert event.correlation_id_str == "record-0003"
+    assert list(event.categories) == ["curriculum", "curriculum_item"]
+    assert args["record_id"] == "record-0003"
+    assert args["block_id"] == "record-0001"
+    assert args["block_name"] == "Block 1"
+    assert args["group_id"] == "record-0002"
+    assert args["group_name"] == "Core subjects"
+    assert args["semester_end_exclusive"] == 2
+    assert args["duration_is_inferred"] is True
+    assert args["credits"] == 3
+    assert args["source_page"] == 1
+    assert args["source_file"] == "plan.pdf"
+    assert args["program"] == "Software Engineering"
+    assert args["curriculum_schema_version"] == "1.2"
+
+    capstone_args = _annotations(begins[1].track_event)
+    assert capstone_args["duration_is_inferred"] is False
+    assert capstone_args["semester_end_exclusive"] == 5
+
+
+def test_emits_curriculum_metadata_event(
+    curriculum_data: dict[str, object],
+) -> None:
+    result, trace = _build_trace(curriculum_data)
+    metadata = next(
+        packet.track_event
+        for packet in trace.packet
+        if packet.HasField("track_event")
+        and packet.track_event.type == TrackEvent.TYPE_INSTANT
+    )
+    args = _annotations(metadata)
+
+    assert result.data
+    assert metadata.name == "Curriculum export"
+    assert args["scheduled_record_count"] == 2
+    assert args["unscheduled_record_count"] == 2
+    assert args["document_group_count"] == 1
+    assert args["semester_duration_ns"] == 100
+
+
+def test_groups_course_tracks_by_document_groups(
+    curriculum_data: dict[str, object],
+) -> None:
+    records = cast(list[dict[str, object]], curriculum_data["records"])
+    records.append(
+        {
+            "id": "record-0005",
+            "order": 5,
+            "semester_start": 1,
+            "name": "Databases",
+            "record_type": "curriculum_item",
+            "block_id": "record-0001",
+            "group_id": "record-0002",
         }
+    )
+    _, trace = _build_trace(curriculum_data)
+    descriptors = {
+        packet.track_descriptor.uuid: packet.track_descriptor
+        for packet in trace.packet
+        if packet.HasField("track_descriptor")
+    }
+    block = next(d for d in descriptors.values() if d.name == "Block 1")
+    group = next(d for d in descriptors.values() if d.name == "Core subjects")
+    group_children = [
+        descriptor
+        for descriptor in descriptors.values()
+        if descriptor.parent_uuid == group.uuid
+    ]
 
-        trace = build_perfetto_trace(legacy)
-        event = next(e for e in trace["traceEvents"] if e["ph"] == "X")
-
-        self.assertEqual(event["args"]["record_id"], "record-0007")
-        self.assertEqual(event["args"]["duration_semesters"], 1)
-
-    def test_rejects_non_positive_semester(self) -> None:
-        self.data["records"][1]["semester_start"] = 0
-
-        with self.assertRaisesRegex(ValueError, "semester_start"):
-            build_perfetto_trace(self.data)
-
-    def test_rejects_unsupported_major_schema(self) -> None:
-        self.data["schema_version"] = "2.0"
-
-        with self.assertRaisesRegex(ValueError, "unsupported"):
-            build_perfetto_trace(self.data)
-
-    def test_rejects_duplicate_record_ids(self) -> None:
-        self.data["records"][2]["id"] = "record-0002"
-
-        with self.assertRaisesRegex(ValueError, "duplicate id"):
-            build_perfetto_trace(self.data)
+    assert group.parent_uuid == block.uuid
+    assert {descriptor.name for descriptor in group_children} == {
+        "0003 · Algorithms",
+        "0004 · Capstone",
+        "0005 · Databases",
+    }
+    assert block.child_ordering == block.EXPLICIT
+    assert group.child_ordering == group.EXPLICIT
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_adds_sequential_semester_schedule_track(
+    curriculum_data: dict[str, object],
+) -> None:
+    _, trace = _build_trace(curriculum_data)
+    descriptors = {
+        packet.track_descriptor.uuid: packet.track_descriptor
+        for packet in trace.packet
+        if packet.HasField("track_descriptor")
+    }
+    schedule = next(d for d in descriptors.values() if d.name == "Semesters")
+    begins = [
+        packet
+        for packet in trace.packet
+        if packet.HasField("track_event")
+        and packet.track_event.type == TrackEvent.TYPE_SLICE_BEGIN
+        and packet.track_event.track_uuid == schedule.uuid
+    ]
+    ends = [
+        packet
+        for packet in trace.packet
+        if packet.HasField("track_event")
+        and packet.track_event.type == TrackEvent.TYPE_SLICE_END
+        and packet.track_event.track_uuid == schedule.uuid
+    ]
+
+    assert [packet.track_event.name for packet in begins] == [
+        "Semester 1",
+        "Semester 2",
+        "Semester 3",
+        "Semester 4",
+    ]
+    assert [packet.timestamp for packet in begins] == [0, 100, 200, 300]
+    assert [packet.timestamp for packet in ends] == [100, 200, 300, 400]
+
+
+def test_honors_explicit_default_duration_provenance(
+    curriculum_data: dict[str, object],
+) -> None:
+    temporal_model = cast(dict[str, object], curriculum_data["temporal_model"])
+    temporal_model["duration_is_inferred"] = False
+
+    _, trace = _build_trace(curriculum_data)
+    event = _course_packets(trace, TrackEvent.TYPE_SLICE_BEGIN)[0].track_event
+
+    assert _annotations(event)["duration_is_inferred"] is False
+
+
+def test_accepts_legacy_v1_input_and_infers_nearest_group() -> None:
+    legacy = {
+        "schema_version": "1.0",
+        "document": {},
+        "records": [
+            {
+                "order": 6,
+                "semester_start": None,
+                "name": "Legacy group",
+                "record_type": "group_or_requirement",
+            },
+            {"order": 7, "semester_start": 2, "name": "Legacy course"},
+        ],
+    }
+
+    result = build_perfetto_trace(legacy)
+    trace = _parse_trace(result.data)
+    event = _course_packets(trace, TrackEvent.TYPE_SLICE_BEGIN)[0].track_event
+    args = _annotations(event)
+
+    assert args["record_id"] == "record-0007"
+    assert args["group_id"] == "record-0006"
+    assert args["group_name"] == "Legacy group"
+    assert args["duration_semesters"] == 1
+
+
+def test_rejects_non_positive_semester(
+    curriculum_data: dict[str, object],
+) -> None:
+    records = cast(list[dict[str, object]], curriculum_data["records"])
+    records[2]["semester_start"] = 0
+
+    with pytest.raises(ValueError, match="semester_start"):
+        build_perfetto_trace(curriculum_data)
+
+
+def test_rejects_unsupported_major_schema(
+    curriculum_data: dict[str, object],
+) -> None:
+    curriculum_data["schema_version"] = "2.0"
+
+    with pytest.raises(ValueError, match="unsupported"):
+        build_perfetto_trace(curriculum_data)
+
+
+def test_rejects_duplicate_record_ids(
+    curriculum_data: dict[str, object],
+) -> None:
+    records = cast(list[dict[str, object]], curriculum_data["records"])
+    records[3]["id"] = "record-0003"
+
+    with pytest.raises(ValueError, match="duplicate record id"):
+        build_perfetto_trace(curriculum_data)

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 
 """
 Convert a curriculum PDF of the form
@@ -21,17 +20,14 @@ macOS:
     brew install poppler
 """
 
-from __future__ import annotations
 
 import argparse
 import json
-import pathlib
 import re
 import shutil
 import subprocess
 import sys
-from typing import Optional
-
+from pathlib import Path
 
 # Matches rows such as:
 #   3   Архитектура компьютера                    3   108
@@ -61,7 +57,7 @@ IGNORED_NAMES = {
 }
 
 
-def extract_pdf_text(pdf_path: pathlib.Path) -> str:
+def extract_pdf_text(pdf_path: Path) -> str:
     """
     Extract text while approximately preserving table layout.
     """
@@ -75,8 +71,8 @@ def extract_pdf_text(pdf_path: pathlib.Path) -> str:
 
     process = subprocess.run(
         ["pdftotext", "-layout", "-enc", "UTF-8", str(pdf_path), "-"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
+        check=False,
         text=True,
         encoding="utf-8",
     )
@@ -94,7 +90,7 @@ def normalize_name(name: str) -> str:
     return " ".join(name.split())
 
 
-def classify_record(name: str, semester: Optional[int]) -> str:
+def classify_record(name: str, semester: int | None) -> str:
     """
     Conservative structural classification.
 
@@ -103,44 +99,24 @@ def classify_record(name: str, semester: Optional[int]) -> str:
     """
     if re.match(r"^Блок\s+\d+\.", name, re.IGNORECASE):
         return "block"
-
-    if semester is not None:
-        return "curriculum_item"
-
-    return "group_or_requirement"
+    return "curriculum_item" if semester is not None else "group_or_requirement"
 
 
 def infer_document_metadata(pages: list[str]) -> dict:
     """
     Try to infer the document title and educational program from page 1.
     """
-    title = None
-    program = None
-
     if not pages:
         return {}
 
     lines = [normalize_name(line) for line in pages[0].splitlines() if line.strip()]
-
-    for line in lines:
-        if line.lower() == "учебный план":
-            title = line
-            break
-
-    for line in lines:
-        if line.startswith("ОП "):
-            program = line
-            break
-
-    result = {}
-
-    if title:
-        result["title"] = title
-
-    if program:
-        result["program"] = program
-
-    return result
+    title = next((line for line in lines if line.lower() == "учебный план"), None)
+    program = next((line for line in lines if line.startswith("ОП ")), None)
+    return {
+        key: value
+        for key, value in {"title": title, "program": program}.items()
+        if value is not None
+    }
 
 
 def parse_curriculum(text: str, source_name: str) -> dict:
@@ -152,17 +128,10 @@ def parse_curriculum(text: str, source_name: str) -> dict:
     metadata = infer_document_metadata(pages)
 
     records = []
-    rejected_candidates = []
-
-    order = 0
 
     for page_num, page in enumerate(pages, start=1):
         for raw_line in page.splitlines():
-            line = raw_line.rstrip()
-
-            match = ROW_RE.match(line)
-
-            if not match:
+            if not (match := ROW_RE.match(raw_line.rstrip())):
                 continue
 
             semester_text, raw_name, credits_text, hours_text = match.groups()
@@ -181,8 +150,7 @@ def parse_curriculum(text: str, source_name: str) -> dict:
             credits = int(credits_text)
             hours = int(hours_text)
 
-            order += 1
-
+            order = len(records) + 1
             record = {
                 "id": f"record-{order:04d}",
                 "order": order,
@@ -196,6 +164,18 @@ def parse_curriculum(text: str, source_name: str) -> dict:
 
             records.append(record)
 
+    active_block_id = active_group_id = None
+    for record in records:
+        match record["record_type"]:
+            case "block":
+                active_block_id, active_group_id = record["id"], None
+            case "group_or_requirement":
+                record["block_id"] = active_block_id
+                active_group_id = record["id"]
+            case "curriculum_item":
+                record["block_id"] = active_block_id
+                record["group_id"] = active_group_id
+
     block_totals = [record for record in records if record["record_type"] == "block"]
 
     scheduled_semesters = [
@@ -205,7 +185,7 @@ def parse_curriculum(text: str, source_name: str) -> dict:
     ]
 
     result = {
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "document": {
             **metadata,
             "source_file": source_name,
@@ -244,6 +224,12 @@ def parse_curriculum(text: str, source_name: str) -> dict:
             "groups_or_requirements": sum(
                 1 for x in records if x["record_type"] == "group_or_requirement"
             ),
+            "grouped_curriculum_items": sum(
+                1
+                for x in records
+                if x["record_type"] == "curriculum_item"
+                and x["group_id"] is not None
+            ),
         },
         "notes": [
             "Records preserve the printed row order of the PDF.",
@@ -254,8 +240,13 @@ def parse_curriculum(text: str, source_name: str) -> dict:
                 "of child rows must not automatically be summed."
             ),
             (
-                "record_type is a conservative inference and does not "
-                "attempt to reconstruct hierarchy from PDF colors or fonts."
+                "block_id links records to the nearest preceding block row; "
+                "group_id links curriculum items to the nearest preceding "
+                "group_or_requirement row."
+            ),
+            (
+                "These links preserve document grouping but do not invent "
+                "nesting between group_or_requirement rows."
             ),
         ],
         "records": records,
@@ -298,8 +289,8 @@ def validate(data: dict, hours_per_credit: int = 36) -> list[dict]:
 
 
 def convert(
-    pdf_path: pathlib.Path,
-    output_path: pathlib.Path,
+    pdf_path: Path,
+    output_path: Path,
 ) -> None:
     text = extract_pdf_text(pdf_path)
 
@@ -342,14 +333,14 @@ def main() -> None:
 
     parser.add_argument(
         "pdf",
-        type=pathlib.Path,
+        type=Path,
         help="Input curriculum PDF",
     )
 
     parser.add_argument(
         "-o",
         "--output",
-        type=pathlib.Path,
+        type=Path,
         help="Output JSON file",
     )
 
@@ -357,19 +348,10 @@ def main() -> None:
 
     pdf_path = args.pdf.resolve()
 
-    if not pdf_path.exists():
-        print(
-            f"File does not exist: {pdf_path}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
+    if not pdf_path.is_file():
+        parser.error(f"input file does not exist: {pdf_path}")
     if pdf_path.suffix.lower() != ".pdf":
-        print(
-            "Input file must be a PDF.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+        parser.error("input file must be a PDF")
 
     output_path = (
         args.output.resolve() if args.output else pdf_path.with_suffix(".json")
@@ -377,9 +359,9 @@ def main() -> None:
 
     try:
         convert(pdf_path, output_path)
-    except Exception as exc:
+    except (OSError, RuntimeError, TypeError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
-        sys.exit(1)
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 # Curriculum parser and Perfetto exporter
 
-This project extracts a university study plan from PDF into source-faithful JSON and converts scheduled curriculum items into a [Perfetto](https://ui.perfetto.dev/) JSON trace.
+This project extracts a university study plan from PDF into source-faithful JSON and converts scheduled curriculum items into a native [Perfetto](https://ui.perfetto.dev/) protobuf trace.
 
 ## Requirements
 
@@ -14,43 +14,61 @@ This project extracts a university study plan from PDF into source-faithful JSON
 uv run curriculum resources/09.03.04.pdf -o curriculum.json
 ```
 
-The curriculum JSON schema is currently `1.1`. Its `records` remain flat and in printed PDF order because text extraction does not reliably expose the visual hierarchy or choice-group relationships. Inventing that hierarchy would make the data less reliable.
+The curriculum JSON schema is currently `1.2`. Its `records` remain flat and in printed PDF order because text extraction does not reliably expose nesting between choice-group rows. Inventing that deeper hierarchy would make the data less reliable.
 
-Version 1.1 adds:
+Version 1.1 introduced deterministic record IDs and an explicit semester-based temporal model. Version 1.2 adds document grouping references:
 
-- a deterministic `id` for correlating each source record with derived data;
-- a `temporal_model` that records the semantic unit, observed semester range, and the explicit assumption that an item lasts one semester by default;
-- support for a future per-record `duration_semesters` override without changing the default parser output.
+- `block_id` points to the nearest preceding `block` row;
+- `group_id` on each scheduled item points to the nearest preceding `group_or_requirement` row;
+- grouping continues across PDF page boundaries and resets when a new block starts;
+- `duration_semesters` remains available as an optional per-record override.
 
 Rows without `semester_start` are aggregate blocks, requirements, or choice groups. Their credits must not be added to scheduled rows without interpreting the curriculum's choice structure.
 
 ## Create a Perfetto timeline
 
 ```sh
-uv run curriculum-perfetto curriculum.json -o curriculum.perfetto.json
+uv run curriculum-perfetto curriculum.json -o curriculum.pftrace
 ```
 
-Open `curriculum.perfetto.json` in <https://ui.perfetto.dev/> with **Open trace file**.
+Open `curriculum.pftrace` in <https://ui.perfetto.dev/> with **Open trace file**.
 
-The exporter writes Chromium/Perfetto JSON trace events:
+The exporter uses the official `perfetto` Python SDK to write native TrackEvent protobuf packets:
 
-- each semester is a process group;
-- every scheduled curriculum row is a complete (`X`) slice on its own track, so concurrent courses do not become falsely nested;
-- unscheduled aggregate rows are excluded from slices and counted in `otherData.curriculum`;
-- every slice includes the record ID/order/type, semantic semester range, credits, hours, source page/file, program, language, and schema version in `args`.
+- curriculum tracks are grouped as `document block → nearest document group → course`, independently of semester;
+- every scheduled curriculum row is a child track with `TYPE_SLICE_BEGIN` and `TYPE_SLICE_END` events, so concurrent courses remain distinct;
+- a separate top-level `Semesters` track contains consecutive `Semester N` slices showing the semantic time windows;
+- unscheduled aggregate rows are excluded from course slices and counted on a `Curriculum export` metadata event;
+- every course slice carries typed `DebugAnnotation` arguments for block/group identity, record ID/order/type, semantic semester range, duration provenance, credits, hours, source page/file, program, language, and schema version;
+- record IDs are also emitted as event correlation IDs.
 
-Perfetto timestamps must use physical units, while the input only has semantic semesters. The default display mapping is therefore **one semester = 1,000,000 microseconds (one trace second)**. This is only a visualization scale: use `semester_start`, `semester_end_exclusive`, and `duration_semesters` in event args for analysis. The scale can be changed without changing semantics:
+In Perfetto SQL, debug annotations are available through the event's argument set with keys such as `debug.record_id`, `debug.credits`, and `debug.semester_start`:
+
+```sql
+SELECT
+  name,
+  dur,
+  EXTRACT_ARG(arg_set_id, 'debug.record_id') AS record_id,
+  EXTRACT_ARG(arg_set_id, 'debug.group_name') AS document_group,
+  EXTRACT_ARG(arg_set_id, 'debug.semester_start') AS semester,
+  EXTRACT_ARG(arg_set_id, 'debug.credits') AS credits
+FROM slice
+WHERE category GLOB 'curriculum,*'
+ORDER BY ts, name;
+```
+
+Native Perfetto timestamps use nanoseconds, while the input only has semantic semesters. The default display mapping is therefore **one semester = 1,000,000,000 nanoseconds (one trace second)**. This is only a visualization scale: use `semester_start`, `semester_end_exclusive`, and `duration_semesters` annotations for analysis. The scale can be changed without changing semantics:
 
 ```sh
 uv run curriculum-perfetto curriculum.json \
-  --semester-duration-us 10000000 \
-  -o curriculum.perfetto.json
+  --semester-duration-ns 10000000000 \
+  -o curriculum.pftrace
 ```
 
-The exporter accepts both schema v1.0 and v1.1 inputs. For v1.0 it derives missing record IDs from `order` and uses the one-semester default.
+The exporter accepts all schema v1.x inputs. For v1.0/v1.1 it derives missing record IDs, temporal defaults, and nearest-preceding document groups where needed.
 
 ## Test
 
 ```sh
-uv run python -m unittest discover -s tests -v
+uv run pytest -v
 ```
