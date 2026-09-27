@@ -10,7 +10,7 @@ requires-python = ">=3.14"
 dependencies = []
 
 [project.scripts]
-curriculum = "curriculum:main"
+curriculum = "curriculum.app:main"
 
 [build-system]
 requires = ["uv_build>=0.11.8,<0.12.0"]
