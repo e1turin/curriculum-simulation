@@ -1,7 +1,7 @@
 [project]
 name = "curriculum"
 version = "0.1.0"
-description = "Add your description here"
+description = "Parse university curricula and export Perfetto timeline traces"
 readme = "README.md"
 authors = [
     { name = "e1turin", email = "ivturnik2003@gmail.com" }
@@ -11,6 +11,7 @@ dependencies = []
 
 [project.scripts]
 curriculum = "curriculum.app:main"
+curriculum-perfetto = "curriculum.perfetto:main"
 
 [build-system]
 requires = ["uv_build>=0.11.8,<0.12.0"]

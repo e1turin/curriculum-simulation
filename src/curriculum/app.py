@@ -201,6 +201,7 @@ def parse_curriculum(text: str, source_name: str) -> dict:
             order += 1
 
             record = {
+                "id": f"record-{order:04d}",
                 "order": order,
                 "source_page": page_num,
                 "semester_start": semester,
@@ -218,8 +219,14 @@ def parse_curriculum(text: str, source_name: str) -> dict:
         if record["record_type"] == "block"
     ]
 
+    scheduled_semesters = [
+        record["semester_start"]
+        for record in records
+        if record["semester_start"] is not None
+    ]
+
     result = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "document": {
             **metadata,
             "source_file": source_name,
@@ -234,6 +241,18 @@ def parse_curriculum(text: str, source_name: str) -> dict:
             ),
             "credits": "Трудоемкость в з.ед",
             "hours": "Трудоемкость в час.",
+        },
+        "temporal_model": {
+            "unit": "semester",
+            "first_semester": min(scheduled_semesters, default=None),
+            "last_semester": max(scheduled_semesters, default=None),
+            "default_item_duration": 1,
+            "duration_is_inferred": True,
+            "duration_note": (
+                "The source contains only a start semester; curriculum "
+                "items are assumed to occupy one semester unless a record "
+                "defines duration_semesters."
+            ),
         },
         "totals": {
             "credits": sum(x["credits"] for x in block_totals),
@@ -256,6 +275,7 @@ def parse_curriculum(text: str, source_name: str) -> dict:
         },
         "notes": [
             "Records preserve the printed row order of the PDF.",
+            "id is deterministic for a record's position in that order.",
             (
                 "semester_start is null when the source row does not "
                 "contain a semester."

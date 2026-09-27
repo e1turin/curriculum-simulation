@@ -6,5 +6,6 @@ dist/
 wheels/
 *.egg-info
 
-# Virtual environments
+# Virtual environments and local UV cache
 .venv
+.uv-cache/
