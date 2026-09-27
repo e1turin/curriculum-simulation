@@ -7,6 +7,7 @@ import pathlib
 import sys
 import uuid
 from dataclasses import dataclass
+from itertools import pairwise
 
 from perfetto.protos.perfetto.trace.perfetto_trace_pb2 import (
     BUILTIN_CLOCK_REALTIME,
@@ -510,64 +511,103 @@ def build_perfetto_trace(
             explicit_child_ordering=True,
         )
 
+    # A repeated name inside one document group represents one subject spread
+    # across semesters. Different names may be concurrent choices in broad groups.
+    candidate_tracks: dict[tuple[str, str], list[ScheduledRecord]] = {}
+    course_tracks: list[list[ScheduledRecord]] = []
     for item in scheduled:
-        record_type = item.record.get("record_type", "unknown")
-        if not isinstance(record_type, str):
-            record_type = str(record_type)
+        if item.group_id is None:
+            course_tracks.append([item])
+            continue
+        key = (item.group_id, item.name)
+        if key not in candidate_tracks:
+            candidate_tracks[key] = []
+            course_tracks.append(candidate_tracks[key])
+        candidate_tracks[key].append(item)
 
-        track_uuid = _track_uuid("record", item.record_id)
+    non_overlapping_tracks: list[list[ScheduledRecord]] = []
+    for items in course_tracks:
+        timeline_order = sorted(items, key=lambda item: (item.semester, item.order))
+        has_overlap = any(
+            current.semester < previous.semester + previous.duration_semesters
+            for previous, current in pairwise(timeline_order)
+        )
+        if has_overlap:
+            non_overlapping_tracks.extend([item] for item in items)
+        else:
+            non_overlapping_tracks.append(items)
+
+    for items in non_overlapping_tracks:
+        first_item = items[0]
+        timeline_order = sorted(items, key=lambda item: (item.semester, item.order))
+        record_ids = [item.record_id for item in items]
+        track_uuid = (
+            _track_uuid("record", record_ids[0])
+            if len(record_ids) == 1
+            else _track_uuid("records", ",".join(record_ids))
+        )
         parent_uuid = None
-        if item.group_id is not None:
-            parent_uuid = group_track_uuids[item.group_id]
-        elif item.block_id is not None:
-            parent_uuid = block_track_uuids[item.block_id]
+        if first_item.group_id is not None:
+            parent_uuid = group_track_uuids[first_item.group_id]
+        elif first_item.block_id is not None:
+            parent_uuid = block_track_uuids[first_item.block_id]
+
+        order_label = "/".join(f"{item.order:04d}" for item in items)
+        source_pages = dict.fromkeys(
+            item.record.get("source_page", "unknown") for item in items
+        )
         add_track_descriptor(
             track_uuid,
-            name=f"{item.order:04d} · {item.name}",
+            name=f"{order_label} · {first_item.name}",
             description=(
-                f"Source record {item.record_id}; "
-                f"page {item.record.get('source_page', 'unknown')}."
+                f"Source records {', '.join(record_ids)}; "
+                f"pages {', '.join(map(str, source_pages))}."
             ),
             parent_uuid=parent_uuid,
-            order=item.order,
+            order=first_item.order,
         )
 
-        start_ns, end_ns = semester_range_ns(
-            item.semester,
-            item.duration_semesters,
-        )
-        add_slice(
-            track_uuid=track_uuid,
-            start_ns=start_ns,
-            end_ns=end_ns,
-            name=item.name,
-            categories=["curriculum", record_type],
-            correlation_id=item.record_id,
-            annotations={
-                "record_id": item.record_id,
-                "record_order": item.order,
-                "record_type": record_type,
-                "block_id": item.block_id,
-                "block_name": item.block_name,
-                "group_id": item.group_id,
-                "group_name": item.group_name,
-                "semester_start": item.semester,
-                "semester_end_exclusive": (item.semester + item.duration_semesters),
-                "duration_semesters": item.duration_semesters,
-                "duration_is_inferred": (
-                    "duration_semesters" not in item.record
-                    and default_duration_is_inferred
-                ),
-                "credits": item.record.get("credits"),
-                "hours": item.record.get("hours"),
-                "source_page": item.record.get("source_page"),
-                "source_file": document.get("source_file"),
-                "document_title": document.get("title"),
-                "program": document.get("program"),
-                "language": document.get("language"),
-                "curriculum_schema_version": schema_version,
-            },
-        )
+        for item in timeline_order:
+            record_type = item.record.get("record_type", "unknown")
+            if not isinstance(record_type, str):
+                record_type = str(record_type)
+
+            start_ns, end_ns = semester_range_ns(
+                item.semester,
+                item.duration_semesters,
+            )
+            add_slice(
+                track_uuid=track_uuid,
+                start_ns=start_ns,
+                end_ns=end_ns,
+                name=item.name,
+                categories=["curriculum", record_type],
+                correlation_id=item.record_id,
+                annotations={
+                    "record_id": item.record_id,
+                    "record_order": item.order,
+                    "record_type": record_type,
+                    "block_id": item.block_id,
+                    "block_name": item.block_name,
+                    "group_id": item.group_id,
+                    "group_name": item.group_name,
+                    "semester_start": item.semester,
+                    "semester_end_exclusive": (item.semester + item.duration_semesters),
+                    "duration_semesters": item.duration_semesters,
+                    "duration_is_inferred": (
+                        "duration_semesters" not in item.record
+                        and default_duration_is_inferred
+                    ),
+                    "credits": item.record.get("credits"),
+                    "hours": item.record.get("hours"),
+                    "source_page": item.record.get("source_page"),
+                    "source_file": document.get("source_file"),
+                    "document_title": document.get("title"),
+                    "program": document.get("program"),
+                    "language": document.get("language"),
+                    "curriculum_schema_version": schema_version,
+                },
+            )
 
     return PerfettoTraceBuild(
         data=builder.serialize(),

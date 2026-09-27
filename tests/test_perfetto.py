@@ -222,6 +222,78 @@ def test_groups_course_tracks_by_document_groups(
     assert group.child_ordering == group.EXPLICIT
 
 
+def test_joins_non_overlapping_semester_items_for_the_same_subject(
+    curriculum_data: dict[str, object],
+) -> None:
+    records = cast(list[dict[str, object]], curriculum_data["records"])
+    records.append(
+        {
+            "id": "record-0005",
+            "order": 5,
+            "semester_start": 2,
+            "name": "Algorithms",
+            "record_type": "curriculum_item",
+            "block_id": "record-0001",
+            "group_id": "record-0002",
+        }
+    )
+
+    _, trace = _build_trace(curriculum_data)
+    descriptor = next(
+        packet.track_descriptor
+        for packet in trace.packet
+        if packet.HasField("track_descriptor")
+        and packet.track_descriptor.name == "0003/0005 · Algorithms"
+    )
+    events = [
+        packet
+        for packet in _course_packets(trace, TrackEvent.TYPE_SLICE_BEGIN)
+        if packet.track_event.track_uuid == descriptor.uuid
+    ]
+
+    assert [packet.timestamp for packet in events] == [0, 100]
+    assert [packet.track_event.correlation_id_str for packet in events] == [
+        "record-0003",
+        "record-0005",
+    ]
+    assert [
+        _annotations(packet.track_event)["semester_start"] for packet in events
+    ] == [
+        1,
+        2,
+    ]
+
+
+def test_keeps_overlapping_items_on_separate_tracks(
+    curriculum_data: dict[str, object],
+) -> None:
+    records = cast(list[dict[str, object]], curriculum_data["records"])
+    records.append(
+        {
+            "id": "record-0005",
+            "order": 5,
+            "semester_start": 1,
+            "name": "Algorithms",
+            "record_type": "curriculum_item",
+            "block_id": "record-0001",
+            "group_id": "record-0002",
+        }
+    )
+
+    _, trace = _build_trace(curriculum_data)
+    algorithm_descriptors = [
+        packet.track_descriptor
+        for packet in trace.packet
+        if packet.HasField("track_descriptor")
+        and packet.track_descriptor.name.endswith(" · Algorithms")
+    ]
+
+    assert {descriptor.name for descriptor in algorithm_descriptors} == {
+        "0003 · Algorithms",
+        "0005 · Algorithms",
+    }
+
+
 def test_adds_sequential_semester_schedule_track(
     curriculum_data: dict[str, object],
 ) -> None:

@@ -36,7 +36,8 @@ Open `curriculum.pftrace` in <https://ui.perfetto.dev/> with **Open trace file**
 The exporter uses the official `perfetto` Python SDK to write native TrackEvent protobuf packets:
 
 - curriculum tracks are grouped as `document block → nearest document group → course`, independently of semester;
-- every scheduled curriculum row is a child track with `TYPE_SLICE_BEGIN` and `TYPE_SLICE_END` events, so concurrent courses remain distinct;
+- scheduled rows with the same `group_id` and course name share one child track when their semester intervals do not overlap, so a subject distributed across semesters appears on one lane;
+- distinct or concurrent curriculum items remain on separate child tracks, with each source row represented by its own `TYPE_SLICE_BEGIN` and `TYPE_SLICE_END` events;
 - a separate top-level `Semesters` track contains consecutive `Semester N` slices showing the semantic time windows;
 - unscheduled aggregate rows are excluded from course slices and counted on a `Curriculum export` metadata event;
 - every course slice carries typed `DebugAnnotation` arguments for block/group identity, record ID/order/type, semantic semester range, duration provenance, credits, hours, source page/file, program, language, and schema version;
