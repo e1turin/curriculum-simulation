@@ -143,8 +143,9 @@ def test_creates_native_slices_with_analysis_metadata(
     event = begins[0].track_event
     args = _annotations(event)
     assert event.name == "Algorithms"
-    assert event.correlation_id_str == "record-0003"
+    assert event.correlation_id_str == "record-0002/Algorithms"
     assert list(event.categories) == ["curriculum", "curriculum_item"]
+    assert args["subject_id"] == "record-0002/Algorithms"
     assert args["record_id"] == "record-0003"
     assert args["block_id"] == "record-0001"
     assert args["block_name"] == "Block 1"
@@ -252,10 +253,9 @@ def test_joins_non_overlapping_semester_items_for_the_same_subject(
     ]
 
     assert [packet.timestamp for packet in events] == [0, 100]
-    assert [packet.track_event.correlation_id_str for packet in events] == [
-        "record-0003",
-        "record-0005",
-    ]
+    assert {packet.track_event.correlation_id_str for packet in events} == {
+        "record-0002/Algorithms"
+    }
     assert [
         _annotations(packet.track_event)["semester_start"] for packet in events
     ] == [

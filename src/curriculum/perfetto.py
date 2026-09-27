@@ -541,6 +541,11 @@ def build_perfetto_trace(
         first_item = items[0]
         timeline_order = sorted(items, key=lambda item: (item.semester, item.order))
         record_ids = [item.record_id for item in items]
+        subject_id = (
+            f"{first_item.group_id}/{first_item.name}"
+            if first_item.group_id is not None
+            else first_item.record_id
+        )
         track_uuid = (
             _track_uuid("record", record_ids[0])
             if len(record_ids) == 1
@@ -582,8 +587,9 @@ def build_perfetto_trace(
                 end_ns=end_ns,
                 name=item.name,
                 categories=["curriculum", record_type],
-                correlation_id=item.record_id,
+                correlation_id=subject_id,
                 annotations={
+                    "subject_id": subject_id,
                     "record_id": item.record_id,
                     "record_order": item.order,
                     "record_type": record_type,

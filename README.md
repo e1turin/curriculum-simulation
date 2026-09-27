@@ -40,8 +40,8 @@ The exporter uses the official `perfetto` Python SDK to write native TrackEvent 
 - distinct or concurrent curriculum items remain on separate child tracks, with each source row represented by its own `TYPE_SLICE_BEGIN` and `TYPE_SLICE_END` events;
 - a separate top-level `Semesters` track contains consecutive `Semester N` slices showing the semantic time windows;
 - unscheduled aggregate rows are excluded from course slices and counted on a `Curriculum export` metadata event;
-- every course slice carries typed `DebugAnnotation` arguments for block/group identity, record ID/order/type, semantic semester range, duration provenance, credits, hours, source page/file, program, language, and schema version;
-- record IDs are also emitted as event correlation IDs.
+- every course slice carries typed `DebugAnnotation` arguments for subject/block/group identity, record ID/order/type, semantic semester range, duration provenance, credits, hours, source page/file, program, language, and schema version;
+- subject identities (`group_id + course name`) are emitted as event correlation IDs, which makes Perfetto render every semester slice of one subject with the same deterministic color; source record IDs remain available as annotations.
 
 In Perfetto SQL, debug annotations are available through the event's argument set with keys such as `debug.record_id`, `debug.credits`, and `debug.semester_start`:
 
