@@ -30,12 +30,23 @@ _TRACK_UUID_NAMESPACE = uuid.UUID("28ad0a98-216d-5d42-91c9-5cbbb5609db7")
 
 
 @dataclass(frozen=True, slots=True)
+class UnscheduledRecord:
+    """A record omitted from the timeline because it has no start semester."""
+
+    record_id: str
+    order: int
+    name: str
+    record_type: str
+
+
+@dataclass(frozen=True, slots=True)
 class PerfettoTraceBuild:
     """Serialized native trace and conversion statistics."""
 
     data: bytes
     scheduled_record_count: int
     unscheduled_record_count: int
+    unscheduled_records: tuple[UnscheduledRecord, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,12 +216,21 @@ def build_perfetto_trace(
         return reference, referenced_name
 
     scheduled: list[ScheduledRecord] = []
+    unscheduled: list[UnscheduledRecord] = []
     active_block_id: str | None = None
     active_group_id: str | None = None
     for record, record_id, order, name in identified_records:
         semester = record.get("semester_start")
         record_type = record.get("record_type", "unknown")
         if semester is None:
+            unscheduled.append(
+                UnscheduledRecord(
+                    record_id=record_id,
+                    order=order,
+                    name=name,
+                    record_type=str(record_type),
+                )
+            )
             if record_type == "block":
                 active_block_id = record_id
                 active_group_id = None
@@ -279,7 +299,7 @@ def build_perfetto_trace(
         last_semester = max(last_semester, model_last_semester)
 
     document = _object(data.get("document", {}), "document")
-    unscheduled_count = len(records) - len(scheduled)
+    unscheduled_count = len(unscheduled)
 
     academic_epoch: datetime.date | None = None
     if academic_start_year is not None:
@@ -619,6 +639,7 @@ def build_perfetto_trace(
         data=builder.serialize(),
         scheduled_record_count=len(scheduled),
         unscheduled_record_count=unscheduled_count,
+        unscheduled_records=tuple(unscheduled),
     )
 
 
@@ -673,6 +694,12 @@ def main() -> None:
             "this year; spring semesters end June 30"
         ),
     )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="List records omitted from the timeline because they lack semester_start",
+    )
     args = parser.parse_args()
 
     input_path = args.input.resolve()
@@ -702,6 +729,13 @@ def main() -> None:
     print(f"Output:      {output_path}")
     print(f"Slices:      {result.scheduled_record_count}")
     print(f"Unscheduled: {result.unscheduled_record_count}")
+    if args.verbose and result.unscheduled_records:
+        print("Unscheduled records (no semester_start):")
+        for record in result.unscheduled_records:
+            print(
+                f"  {record.order}. {record.record_id} "
+                f"[{record.record_type}]: {record.name}"
+            )
 
 
 if __name__ == "__main__":

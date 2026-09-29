@@ -1,4 +1,7 @@
 import datetime
+import json
+import sys
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -9,7 +12,7 @@ from perfetto.protos.perfetto.trace.perfetto_trace_pb2 import (
     TrackEvent,
 )
 
-from curriculum.perfetto import PerfettoTraceBuild, build_perfetto_trace
+from curriculum.perfetto import PerfettoTraceBuild, build_perfetto_trace, main
 
 
 def _parse_trace(data: bytes) -> Trace:
@@ -119,6 +122,36 @@ def _build_trace(
         academic_start_year=academic_start_year,
     )
     return result, _parse_trace(result.data)
+
+
+def test_verbose_cli_lists_records_without_a_start_semester(
+    curriculum_data: dict[str, object],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    input_path = tmp_path / "curriculum.json"
+    output_path = tmp_path / "curriculum.pftrace"
+    input_path.write_text(json.dumps(curriculum_data), encoding="utf-8")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "curriculum-perfetto",
+            "--verbose",
+            str(input_path),
+            "-o",
+            str(output_path),
+        ],
+    )
+
+    main()
+
+    assert capsys.readouterr().out.splitlines()[-3:] == [
+        "Unscheduled records (no semester_start):",
+        "  1. record-0001 [block]: Block 1",
+        "  2. record-0002 [group_or_requirement]: Core subjects",
+    ]
 
 
 def test_creates_native_slices_with_analysis_metadata(
