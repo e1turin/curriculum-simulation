@@ -9,3 +9,8 @@ wheels/
 # Virtual environments and local UV cache
 .venv
 .uv-cache/
+.DS_Store
+*.pdf
+*.json
+*.perfetto
+*.pftrace
